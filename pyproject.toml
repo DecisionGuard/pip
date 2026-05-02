@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "decisionguard"
+version = "0.1.0"
+description = "DecisionGuard runtime governance SDK for Python agent frameworks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = [
+    "decisionguard",
+    "ai-governance",
+    "agent",
+    "langchain",
+    "crewai",
+    "autogen",
+    "guardrails",
+    "llm",
+    "agentic",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.optional-dependencies]
+httpx = ["httpx>=0.24.0"]
+requests = ["requests>=2.28.0"]
+langchain = ["langchain-core>=0.1.0", "httpx>=0.24.0"]
+crewai = ["crewai>=0.1.0"]
+autogen = ["pyautogen>=0.2.0"]
+all = [
+    "httpx>=0.24.0",
+    "langchain-core>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://decision-guard.com"
+Documentation = "https://decision-guard.com/docs"
+Repository = "https://github.com/DecisionGuard/pip"
+"Bug Tracker" = "https://github.com/DecisionGuard/pip/issues"
+
+[project.scripts]
+dg-audit = "decisionguard.workflow_wrapper:cli_audit"
+
+[tool.hatch.build.targets.wheel]
+packages = ["decisionguard"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "decisionguard/*.py",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
