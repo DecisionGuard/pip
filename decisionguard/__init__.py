@@ -32,4 +32,4 @@ __all__ = [
     "aguard_and_execute",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"

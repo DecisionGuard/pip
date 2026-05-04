@@ -203,8 +203,16 @@ class DecisionGuardClient:
         context: Optional[str] = None,
         checks: Optional[list] = None,
         timezone: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Submit content for fact-checking. Returns verdict, claims, issues, and a review_id."""
+        """Submit content for fact-checking. Returns verdict, claims, issues, and a review_id.
+
+        Args:
+            timeout: Override the client timeout for this call. Fact-checks invoke
+                     an AI model and can take 30-90 s; defaults to max(self.timeout, 120).
+        """
+        effective_timeout = timeout or max(self.timeout, 120.0)
+
         body: Dict[str, Any] = {"content": content}
         if context:
             body["context"] = context
@@ -217,14 +225,14 @@ class DecisionGuardClient:
         headers = {"Content-Type": "application/json", "x-api-key": self.api_key}
 
         if _USE_HTTPX:
-            with httpx.Client(timeout=self.timeout) as c:
+            with httpx.Client(timeout=effective_timeout) as c:
                 resp = c.post(url, json=body, headers=headers)
             if resp.status_code >= 400:
                 raise DGError(f"DecisionGuard fact-check returned {resp.status_code}: {resp.text}", resp.status_code)
             return resp.json()
 
         if _requests is not None:
-            resp = _requests.post(url, json=body, headers=headers, timeout=self.timeout)
+            resp = _requests.post(url, json=body, headers=headers, timeout=effective_timeout)
             if resp.status_code >= 400:
                 raise DGError(f"DecisionGuard fact-check returned {resp.status_code}: {resp.text}", resp.status_code)
             return resp.json()
@@ -237,8 +245,15 @@ class DecisionGuardClient:
         context: Optional[str] = None,
         checks: Optional[list] = None,
         timezone: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Async version of fact_check(). Requires httpx."""
+        """Async version of fact_check(). Requires httpx.
+
+        Args:
+            timeout: Override the client timeout for this call. Defaults to max(self.timeout, 120).
+        """
+        effective_timeout = timeout or max(self.timeout, 120.0)
+
         body: Dict[str, Any] = {"content": content}
         if context:
             body["context"] = context
@@ -251,7 +266,7 @@ class DecisionGuardClient:
             raise RuntimeError("Install httpx to use afact_check(): pip install httpx")
 
         import httpx as _httpx
-        async with _httpx.AsyncClient(timeout=self.timeout) as c:
+        async with _httpx.AsyncClient(timeout=effective_timeout) as c:
             resp = await c.post(
                 f"{self.base_url}/api/v1/fact-check",
                 json=body,
