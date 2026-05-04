@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -106,7 +107,7 @@ class DecisionGuardClient:
         environment: str = "production",
         intent: Optional[Dict[str, Any]] = None,
         resource_name: Optional[str] = None,
-        actor_source: Optional[str] = None,
+        actor: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Submit a governance review via POST /api/v1/reviews.
@@ -117,8 +118,8 @@ class DecisionGuardClient:
             environment: 'production', 'staging', 'development'.
             intent: Optional dict with 'goal' and 'proposed_action' keys.
             resource_name: The resource being acted on (e.g. 'prod-db', 'k8s-cluster').
-            actor_source: Source system (e.g. 'flowise', 'langchain', 'crewai').
-            idempotency_key: Deduplicate repeated submissions.
+            actor: Optional dict with actor identity (id, type, authority_level, source).
+            idempotency_key: Deduplicate repeated submissions. Auto-generated if omitted.
 
         Returns:
             Full response dict. Use enforce_review_verdict() to raise on BLOCK/REQUIRE_APPROVAL.
@@ -127,20 +128,19 @@ class DecisionGuardClient:
             "change_type": change_type,
             "change_payload": change_payload,
             "environment": environment,
+            "idempotency_key": idempotency_key or f"sdk-py-{uuid.uuid4()}",
         }
         if intent:
             body["intent"] = intent
         if resource_name:
             body["resource_name"] = resource_name
-        if actor_source:
-            body["actor_source"] = actor_source
-        if idempotency_key:
-            body["idempotency_key"] = idempotency_key
+        if actor:
+            body["actor"] = actor
 
         url = f"{self.base_url}/api/v1/reviews"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "x-api-key": self.api_key,
         }
 
         if _USE_HTTPX:
@@ -165,7 +165,7 @@ class DecisionGuardClient:
         environment: str = "production",
         intent: Optional[Dict[str, Any]] = None,
         resource_name: Optional[str] = None,
-        actor_source: Optional[str] = None,
+        actor: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Async version of review(). Requires httpx."""
@@ -176,20 +176,19 @@ class DecisionGuardClient:
             "change_type": change_type,
             "change_payload": change_payload,
             "environment": environment,
+            "idempotency_key": idempotency_key or f"sdk-py-{uuid.uuid4()}",
         }
         if intent:
             body["intent"] = intent
         if resource_name:
             body["resource_name"] = resource_name
-        if actor_source:
-            body["actor_source"] = actor_source
-        if idempotency_key:
-            body["idempotency_key"] = idempotency_key
+        if actor:
+            body["actor"] = actor
 
         url = f"{self.base_url}/api/v1/reviews"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "x-api-key": self.api_key,
         }
         import httpx as _httpx
         async with _httpx.AsyncClient(timeout=self.timeout) as c:
@@ -589,6 +588,98 @@ class DecisionGuardClient:
         if resp.status_code >= 400:
             raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
         return resp.json()
+
+    def poll_pending_approvals(self, since: Optional[str] = None) -> Dict[str, Any]:
+        """Poll for pending approvals awaiting resolution.
+
+        Args:
+            since: Optional ISO-8601 timestamp — only return approvals requested after this time.
+
+        Returns:
+            Dict with 'approvals' list and 'count'.
+        """
+        url = f"{self.base_url}/api/v1/approvals/pending"
+        headers = {"x-api-key": self.api_key}
+        params: Dict[str, Any] = {}
+        if since:
+            params["since"] = since
+
+        if _USE_HTTPX:
+            with httpx.Client(timeout=self.timeout) as c:
+                resp = c.get(url, params=params, headers=headers)
+            if resp.status_code >= 400:
+                raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
+            return resp.json()
+
+        if _requests is not None:
+            resp = _requests.get(url, params=params, headers=headers, timeout=self.timeout)
+            if resp.status_code >= 400:
+                raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
+            return resp.json()
+
+        raise RuntimeError("Install httpx or requests to use DecisionGuardClient")
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        approved: bool,
+        justification: str,
+        actor_system: str = "python-sdk",
+        actor_external_id: str = "sdk-user",
+        actor_name: Optional[str] = None,
+        conditions: Optional[list] = None,
+        precedent: bool = False,
+        break_glass: bool = False,
+    ) -> Dict[str, Any]:
+        """Resolve a pending approval (approve or deny).
+
+        Args:
+            approval_id: The approval UUID from poll_pending_approvals().
+            approved: True to approve, False to deny.
+            justification: Required reason for the decision.
+            actor_system: Name of the system resolving (e.g. 'jira', 'slack', 'python-sdk').
+            actor_external_id: Unique ID of the person/system resolving.
+            actor_name: Optional display name of the resolver.
+            conditions: Optional list of conditions attached to the approval.
+            precedent: If True, this decision sets a precedent for similar future requests.
+            break_glass: If True, override absolute-block (requires break_glass:override scope).
+
+        Returns:
+            Resolve response dict with approval status and optional authority artifact.
+        """
+        url = f"{self.base_url}/api/v1/approvals/{approval_id}/resolve"
+        headers = {"Content-Type": "application/json", "x-api-key": self.api_key}
+        body: Dict[str, Any] = {
+            "approved": approved,
+            "justification": justification,
+            "actor": {
+                "system": actor_system,
+                "external_id": actor_external_id,
+            },
+        }
+        if actor_name:
+            body["actor"]["name"] = actor_name
+        if conditions:
+            body["conditions"] = conditions
+        if precedent:
+            body["precedent"] = True
+        if break_glass:
+            body["break_glass"] = True
+
+        if _USE_HTTPX:
+            with httpx.Client(timeout=self.timeout) as c:
+                resp = c.post(url, json=body, headers=headers)
+            if resp.status_code >= 400:
+                raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
+            return resp.json()
+
+        if _requests is not None:
+            resp = _requests.post(url, json=body, headers=headers, timeout=self.timeout)
+            if resp.status_code >= 400:
+                raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
+            return resp.json()
+
+        raise RuntimeError("Install httpx or requests to use DecisionGuardClient")
 
     def with_trace(self, trace_id: str, parent_decision_id: Optional[str] = None) -> "DecisionGuardClient":
         return DecisionGuardClient(
