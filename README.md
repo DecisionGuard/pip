@@ -21,7 +21,7 @@ pip install "decisionguard[all]"          # everything
 from decisionguard import DecisionGuardClient, DGBlockedError
 
 client = DecisionGuardClient.from_env()
-# Reads DG_API_KEY and DG_BASE_URL from environment
+# Reads DG_API_KEY from environment; DG_BASE_URL is optional (default: https://decision-guard.com)
 
 response = client.audit({
     "actor": {"id": "my-agent", "type": "agent", "authority": "supervised"},
@@ -294,6 +294,93 @@ print(identity["actor_id"], identity["authority"])
 identity = await client.aget_identity(review_id)
 ```
 
+## Direct review submission
+
+Submit a change for governance review using the full reviews API contract:
+
+```python
+from decisionguard import DecisionGuardClient
+
+client = DecisionGuardClient.from_env()
+
+result = client.review(
+    change_type="iac_terraform",
+    environment="production",
+    change_payload={
+        "resources": [
+            {"type": "aws_s3_bucket", "action": "create", "name": "audit-logs-prod"}
+        ]
+    },
+    intent={"goal": "Create audit log bucket", "proposed_action": "terraform apply"},
+    actor_source="ci-pipeline",
+    resource_name="audit-logs-prod",
+)
+
+print(result["data"]["review_id"])
+print(result["data"]["verdict"]["decision"])  # ALLOW | ALLOW_WITH_CONDITIONS | REQUIRE_APPROVAL | BLOCK
+
+# Async variant
+result = await client.areview(
+    change_type="iac_terraform",
+    environment="production",
+    change_payload={...},
+)
+```
+
+## Enforce a review verdict
+
+Raise a typed exception if the verdict is not `ALLOW` or `ALLOW_WITH_CONDITIONS`:
+
+```python
+from decisionguard import DecisionGuardClient, enforce_review_verdict, DGBlockedError, DGEscalatedError
+
+client = DecisionGuardClient.from_env()
+result = client.review(change_type="code_application", environment="production", change_payload={...})
+
+try:
+    enforce_review_verdict(result)
+    # Only reaches here on ALLOW or ALLOW_WITH_CONDITIONS
+    run_deployment()
+except DGBlockedError as e:
+    print("Blocked:", e.response["data"]["verdict"]["decision"])
+except DGEscalatedError as e:
+    print("Requires approval:", e.response["data"]["verdict"]["decision"])
+```
+
+## guard_and_execute
+
+Review a change and, if approved, immediately execute a callable. On `BLOCK` or `REQUIRE_APPROVAL` the callable is never invoked:
+
+```python
+from decisionguard import DecisionGuardClient, guard_and_execute
+
+client = DecisionGuardClient.from_env()
+
+def run_migration():
+    return apply_database_migration()
+
+result, tool_result = guard_and_execute(
+    client=client,
+    change_type="data_migration",
+    environment="production",
+    change_payload={"migration": "add_user_index", "table": "users"},
+    intent={"goal": "Add index for performance", "proposed_action": "ALTER TABLE users ADD INDEX"},
+    fn=run_migration,
+)
+
+print(result["data"]["verdict"]["decision"])  # ALLOW
+print(tool_result)                            # return value of run_migration()
+
+# Async variant
+result, tool_result = await aguard_and_execute(
+    client=client,
+    change_type="data_migration",
+    environment="production",
+    change_payload={...},
+    fn=async_run_migration,
+)
+```
+
 ## Fetch a stored review
 
 Poll for an approval decision after `ESCALATE` or `REQUIRE_APPROVAL`:
@@ -359,7 +446,7 @@ except DGEscalatedError as e:
 | Variable | Required | Description |
 |---|---|---|
 | `DG_API_KEY` | Yes | Your tenant API key |
-| `DG_BASE_URL` | Yes | e.g. `https://decision-guard.com` |
+| `DG_BASE_URL` | No | API base URL (default: `https://decision-guard.com`) |
 
 ## Links
 

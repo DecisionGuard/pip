@@ -6,12 +6,13 @@ from .dg_client import (
     DGBlockedError,
     DGEscalatedError,
     enforce_verdict,
+    enforce_review_verdict,
 )
 from .langchain_tools import DGGuardedTool, guard_tools
 from .crewai_auditor import DecisionGuardCrewAuditor
 from .autogen_auditor import DecisionGuardAuditor
 from .openai_agents import DecisionGuardRail
-from .workflow_wrapper import audit_step, audit_or_fail
+from .workflow_wrapper import audit_step, audit_or_fail, guard_and_execute, aguard_and_execute
 
 __all__ = [
     "DecisionGuardClient",
@@ -19,6 +20,7 @@ __all__ = [
     "DGBlockedError",
     "DGEscalatedError",
     "enforce_verdict",
+    "enforce_review_verdict",
     "DGGuardedTool",
     "guard_tools",
     "DecisionGuardCrewAuditor",
@@ -26,6 +28,8 @@ __all__ = [
     "DecisionGuardRail",
     "audit_step",
     "audit_or_fail",
+    "guard_and_execute",
+    "aguard_and_execute",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"

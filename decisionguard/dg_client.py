@@ -61,11 +61,13 @@ class DecisionGuardClient:
     @classmethod
     def from_env(cls, **overrides: Any) -> "DecisionGuardClient":
         api_key = overrides.pop("api_key", None) or os.environ.get("DG_API_KEY")
-        base_url = overrides.pop("base_url", None) or os.environ.get("DG_BASE_URL")
+        base_url = (
+            overrides.pop("base_url", None)
+            or os.environ.get("DG_BASE_URL")
+            or "https://decision-guard.com"
+        )
         if not api_key:
             raise ValueError("DG_API_KEY is required")
-        if not base_url:
-            raise ValueError("DG_BASE_URL is required")
         return cls(api_key=api_key, base_url=base_url.rstrip("/"), **overrides)
 
     def audit(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -96,6 +98,105 @@ class DecisionGuardClient:
             return resp.json()
 
         raise RuntimeError("Install httpx or requests to use DecisionGuardClient")
+
+    def review(
+        self,
+        change_type: str,
+        change_payload: Dict[str, Any],
+        environment: str = "production",
+        intent: Optional[Dict[str, Any]] = None,
+        resource_name: Optional[str] = None,
+        actor_source: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Submit a governance review via POST /api/v1/reviews.
+
+        Args:
+            change_type: Category of the action (e.g. 'agentic_action', 'deployment').
+            change_payload: Dict describing the change (tool_name, summary, params, etc.).
+            environment: 'production', 'staging', 'development'.
+            intent: Optional dict with 'goal' and 'proposed_action' keys.
+            resource_name: The resource being acted on (e.g. 'prod-db', 'k8s-cluster').
+            actor_source: Source system (e.g. 'flowise', 'langchain', 'crewai').
+            idempotency_key: Deduplicate repeated submissions.
+
+        Returns:
+            Full response dict. Use enforce_review_verdict() to raise on BLOCK/REQUIRE_APPROVAL.
+        """
+        body: Dict[str, Any] = {
+            "change_type": change_type,
+            "change_payload": change_payload,
+            "environment": environment,
+        }
+        if intent:
+            body["intent"] = intent
+        if resource_name:
+            body["resource_name"] = resource_name
+        if actor_source:
+            body["actor_source"] = actor_source
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
+
+        url = f"{self.base_url}/api/v1/reviews"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        if _USE_HTTPX:
+            with httpx.Client(timeout=self.timeout) as c:
+                resp = c.post(url, json=body, headers=headers)
+            if resp.status_code >= 400:
+                raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
+            return resp.json()
+
+        if _requests is not None:
+            resp = _requests.post(url, json=body, headers=headers, timeout=self.timeout)
+            if resp.status_code >= 400:
+                raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
+            return resp.json()
+
+        raise RuntimeError("Install httpx or requests to use DecisionGuardClient")
+
+    async def areview(
+        self,
+        change_type: str,
+        change_payload: Dict[str, Any],
+        environment: str = "production",
+        intent: Optional[Dict[str, Any]] = None,
+        resource_name: Optional[str] = None,
+        actor_source: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Async version of review(). Requires httpx."""
+        if not _USE_HTTPX:
+            raise RuntimeError("Install httpx to use areview(): pip install httpx")
+
+        body: Dict[str, Any] = {
+            "change_type": change_type,
+            "change_payload": change_payload,
+            "environment": environment,
+        }
+        if intent:
+            body["intent"] = intent
+        if resource_name:
+            body["resource_name"] = resource_name
+        if actor_source:
+            body["actor_source"] = actor_source
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
+
+        url = f"{self.base_url}/api/v1/reviews"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=self.timeout) as c:
+            resp = await c.post(url, json=body, headers=headers)
+        if resp.status_code >= 400:
+            raise DGError(f"DecisionGuard returned {resp.status_code}: {resp.text}", resp.status_code)
+        return resp.json()
 
     def fact_check(
         self,
@@ -500,6 +601,10 @@ class DecisionGuardClient:
 
 
 def enforce_verdict(response: Dict[str, Any]) -> Dict[str, Any]:
+    """Enforce verdict from the security-audit skill endpoint.
+
+    Verdict values: ALLOW, CONDITIONAL, ESCALATE, BLOCK
+    """
     verdict = response.get("verdict", "BLOCK")
     if verdict == "ALLOW":
         return response
@@ -508,3 +613,30 @@ def enforce_verdict(response: Dict[str, Any]) -> Dict[str, Any]:
     if verdict == "ESCALATE":
         raise DGEscalatedError(response)
     raise DGBlockedError(response)
+
+
+def enforce_review_verdict(response: Dict[str, Any]) -> Dict[str, Any]:
+    """Enforce verdict from the POST /api/v1/reviews endpoint.
+
+    Decision values: ALLOW, ALLOW_WITH_CONDITIONS, REQUIRE_APPROVAL, BLOCK
+    Raises DGBlockedError on BLOCK, DGEscalatedError on REQUIRE_APPROVAL.
+    Returns the full response on ALLOW or ALLOW_WITH_CONDITIONS.
+    """
+    data = response.get("data", response)
+    verdict_obj = data.get("verdict", {})
+    decision = verdict_obj.get("decision", "BLOCK") if isinstance(verdict_obj, dict) else str(verdict_obj)
+    if decision == "ALLOW":
+        return response
+    if decision == "ALLOW_WITH_CONDITIONS":
+        return response
+    if decision == "REQUIRE_APPROVAL":
+        raise DGEscalatedError({
+            "decision": decision,
+            "review_id": data.get("review_id"),
+            "summary": verdict_obj.get("summary", "") if isinstance(verdict_obj, dict) else "",
+        })
+    raise DGBlockedError({
+        "decision": decision,
+        "review_id": data.get("review_id"),
+        "summary": verdict_obj.get("summary", "") if isinstance(verdict_obj, dict) else "",
+    })
